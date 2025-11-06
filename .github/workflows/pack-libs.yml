@@ -1,0 +1,222 @@
+name: PHP Pack Lib
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 5"
+  release:
+    types:
+      - published
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'src/**'
+      - 'config/**'
+      - '.github/workflows/test-pack-lib.yml'
+      - 'bin/**'
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  MUSL_VERSION: "1.2.5"
+  GLIBC_VERSION: "2.17"
+
+jobs:
+  build:
+    name: "Pack ${{ matrix.lib }} for ${{ matrix.runner }}"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        runner:
+          - ubuntu-24.04 # x86_64 musl
+          - ubuntu-22.04 # x86_64 glibc
+          - ubuntu-24.04-arm # aarch64 musl
+          - ubuntu-22.04-arm # aarch64 glibc
+          - macos-15-intel
+          - windows-2022
+          - macos-15
+        lib:
+          - gmssl
+          - jbig
+          - lerc
+          - libacl
+          - libssh2
+          - zlib
+          - pkg-config
+          - bzip2
+          - gmp
+          - sqlite
+          - liblz4
+          - openssl
+          - brotli
+          - libargon2
+          - libiconv
+          - libavif
+          - libpng
+          - icu
+          - libcares
+          - libevent
+          - libsodium
+          - libwebp
+          - libyaml
+          - ncurses
+          - onig
+          - readline
+          - unixodbc
+          - xz
+          - grpc
+          - libaom
+          - libde265
+          - libheif
+        exclude:
+          - { runner: "windows-2022", lib: "pkg-config" }
+          - { runner: "windows-2022", lib: "gmp" }
+          - { runner: "windows-2022", lib: "liblz4" }
+          - { runner: "windows-2022", lib: "brotli" }
+          - { runner: "windows-2022", lib: "libargon2" }
+          - { runner: "windows-2022", lib: "libiconv" }
+          - { runner: "windows-2022", lib: "icu" }
+          - { runner: "windows-2022", lib: "libcares" }
+          - { runner: "windows-2022", lib: "libevent" }
+          - { runner: "windows-2022", lib: "libsodium" }
+          - { runner: "windows-2022", lib: "ncurses" }
+          - { runner: "windows-2022", lib: "readline" }
+          - { runner: "windows-2022", lib: "unixodbc" }
+          - { runner: "windows-2022", lib: "grpc" }
+          - { runner: "windows-2022", lib: "libaom" }
+          - { runner: "windows-2022", lib: "libde265" }
+          - { runner: "windows-2022", lib: "libheif" }
+          - { runner: "windows-2022", lib: "jbig" }
+          - { runner: "windows-2022", lib: "lerc" }
+          - { runner: "windows-2022", lib: "libacl" }
+          - { runner: "macos-15-intel", lib: "libacl" }
+          - { runner: "macos-15", lib: "libacl" }
+      fail-fast: false
+    steps:
+      - name: "Process env string"
+        id: process-env
+        shell: bash
+        run: |
+          case "${{ matrix.runner }}" in
+            ubuntu-24.04)
+              echo "OS=linux-musl-${{ env.MUSL_VERSION }}" >> "$GITHUB_OUTPUT"
+              echo "ARCH=x86_64" >> "$GITHUB_OUTPUT"
+              echo "CMD=bin/spc-alpine-docker" >> "$GITHUB_OUTPUT"
+              echo "SUFFIX=txz" >> "$GITHUB_OUTPUT"
+              ;;
+            ubuntu-22.04)
+              echo "OS=linux-glibc-${{ env.GLIBC_VERSION }}" >> "$GITHUB_OUTPUT"
+              echo "ARCH=x86_64" >> "$GITHUB_OUTPUT"
+              echo "CMD=bin/spc-gnu-docker" >> "$GITHUB_OUTPUT"
+              echo "SUFFIX=txz" >> "$GITHUB_OUTPUT"
+              ;;
+            ubuntu-24.04-arm)
+              echo "OS=linux-musl-${{ env.MUSL_VERSION }}" >> "$GITHUB_OUTPUT"
+              echo "ARCH=aarch64" >> "$GITHUB_OUTPUT"
+              echo CMD="bin/spc-alpine-docker" >> "$GITHUB_OUTPUT"
+              echo "SUFFIX=txz" >> "$GITHUB_OUTPUT"
+              ;;
+            ubuntu-22.04-arm)
+              echo "OS=linux-glibc-${{ env.GLIBC_VERSION }}" >> "$GITHUB_OUTPUT"
+              echo "ARCH=aarch64" >> "$GITHUB_OUTPUT"
+              echo "CMD=bin/spc-gnu-docker" >> "$GITHUB_OUTPUT"
+              echo "SUFFIX=txz" >> "$GITHUB_OUTPUT"
+              ;;
+            windows-2022|windows-2022|windows-latest)
+              echo "OS=windows" >> "$GITHUB_OUTPUT"
+              echo "ARCH=x86_64" >> "$GITHUB_OUTPUT"
+              echo "CMD=bin/spc" >> "$GITHUB_OUTPUT"
+              echo "SUFFIX=tgz" >> "$GITHUB_OUTPUT"
+              ;;
+            macos-15-intel)
+              echo "OS=darwin" >> "$GITHUB_OUTPUT"
+              echo "ARCH=x86_64" >> "$GITHUB_OUTPUT"
+              echo "CMD=bin/spc" >> "$GITHUB_OUTPUT"
+              echo "SUFFIX=txz" >> "$GITHUB_OUTPUT"
+              ;;
+            macos-15)
+              echo "OS=darwin" >> "$GITHUB_OUTPUT"
+              echo "ARCH=aarch64" >> "$GITHUB_OUTPUT"
+              echo "CMD=bin/spc" >> "$GITHUB_OUTPUT"
+              echo "SUFFIX=txz" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: "Checkout remote"
+        if: github.repository != 'crazywhalecc/static-php-cli'
+        uses: actions/checkout@v4
+        with:
+          repository: crazywhalecc/static-php-cli
+          ref: main
+
+      - name: "Setup PHP"
+        if: matrix.runner != 'ubuntu-22.04' && matrix.runner != 'ubuntu-22.04-arm'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          tools: pecl, composer
+          extensions: curl, openssl, mbstring, filter
+          ini-values: memory_limit=-1
+
+      - name: "Cache composer packages"
+        id: composer-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php
+
+      # Cache downloaded source
+      - id: cache-download
+        uses: actions/cache@v4
+        with:
+          path: downloads
+          key: pack-lib-dependencies
+
+      - name: "Install Dependencies"
+        if: matrix.runner != 'ubuntu-22.04' && matrix.runner != 'ubuntu-22.04-arm'
+        run: composer update -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+
+      - run: ${{ steps.process-env.outputs.CMD }} doctor --auto-fix
+
+      - run: ${{ steps.process-env.outputs.CMD }} download --for-libs="${{ matrix.lib }}" --debug --retry=5 --shallow-clone
+
+      - name: "Download pre-built pkg-config for ${{ matrix.runner }}"
+        if: matrix.runner != 'windows-2022' && matrix.lib != 'pkg-config'
+        run: |
+          ${{ steps.process-env.outputs.CMD }} download --for-libs="pkg-config" --debug --retry=5 --shallow-clone --prefer-pre-built
+          ${{ steps.process-env.outputs.CMD }} build:libs pkg-config --debug
+
+      - if: matrix.runner != 'windows-2022' || matrix.lib != 'pkg-config'
+        run: ${{ steps.process-env.outputs.CMD }} dev:pack-lib --debug ${{ matrix.lib }}
+
+      - name: "Upload packed lib (${{ matrix.lib }} for ${{ steps.process-env.outputs.ARCH }}-${{ steps.process-env.outputs.OS }})"
+        uses: actions/upload-artifact@v4
+        with:
+          path: dist/${{ matrix.lib }}-${{ steps.process-env.outputs.ARCH }}-${{ steps.process-env.outputs.OS }}.${{ steps.process-env.outputs.SUFFIX }}
+          name: ${{ matrix.lib }}-${{ steps.process-env.outputs.ARCH }}-${{ steps.process-env.outputs.OS }}
+
+      - name: "Upload to current release event"
+        if: github.repository == 'static-php/static-php-cli-hosted' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.lib }}-${{ steps.process-env.outputs.ARCH }}-${{ steps.process-env.outputs.OS }}.${{ steps.process-env.outputs.SUFFIX }}
+
+      - name: "Update latest release of hosted repo"
+        if: github.repository == 'static-php/static-php-cli-hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        shell: bash
+        run: |
+          ref="$(gh release view --repo static-php/static-php-cli-hosted --json tagName --jq '.tagName')"
+          gh release upload "$ref" "dist/${{ matrix.lib }}-${{ steps.process-env.outputs.ARCH }}-${{ steps.process-env.outputs.OS }}.${{ steps.process-env.outputs.SUFFIX }}" --repo static-php/static-php-cli-hosted --clobber
+      
+      - name: "Deploy to self-hosted OSS"
+        if: github.repository == 'static-php/static-php-cli-hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        uses: static-php/upload-s3-action@v1.0.0
+        with:
+          aws_key_id: ${{ secrets.AWS_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws_bucket: ${{ secrets.AWS_BUCKET }}
+          source_dir: "dist/"
+          destination_dir: static-php-cli/pre-built/
+          endpoint: ${{ secrets.AWS_ENDPOINT }}
