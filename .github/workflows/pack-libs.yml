@@ -28,13 +28,7 @@ jobs:
     strategy:
       matrix:
         runner:
-          - ubuntu-24.04 # x86_64 musl
-          - ubuntu-22.04 # x86_64 glibc
-          - ubuntu-24.04-arm # aarch64 musl
-          - ubuntu-22.04-arm # aarch64 glibc
-          - macos-15-intel
           - windows-2022
-          - macos-15
         lib:
           - gmssl
           - jbig
@@ -54,6 +48,7 @@ jobs:
           - libavif
           - libpng
           - icu
+          - intl
           - libcares
           - libevent
           - libsodium
@@ -89,8 +84,6 @@ jobs:
           - { runner: "windows-2022", lib: "jbig" }
           - { runner: "windows-2022", lib: "lerc" }
           - { runner: "windows-2022", lib: "libacl" }
-          - { runner: "macos-15-intel", lib: "libacl" }
-          - { runner: "macos-15", lib: "libacl" }
       fail-fast: false
     steps:
       - name: "Process env string"
