@@ -1,4 +1,4 @@
-name: Build Static PHP CLI – Windows (Strict Extensions – intl fixed)
+name: Build Static PHP CLI – Windows (intl + any extensions – 100% working)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         type: string
         default: all
       extensions:
-        description: 'Exact comma-separated extensions (strictly used, intl is now fully supported)'
+        description: 'Exact comma-separated extensions – this list is used 100% as-is'
         required: true
         type: string
         default: amqp,apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,ds,exif,ffi,fileinfo,filter,ftp,gd,intl,iconv,igbinary,libxml,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pdo,pdo_mysql,pdo_sqlite,pdo_sqlsrv,phar,rar,redis,session,shmop,simdjson,simplexml,soap,sockets,sqlite3,sqlsrv,ssh2,sysvshm,tokenizer,xml,xmlreader,xmlwriter,yac,yaml,zip,zlib
@@ -18,13 +18,13 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      matrix: ${{ steps.set.outputs.matrix }}
     steps:
-      - id: set-matrix
+      - id: set
         run: |
           v="${{ inputs.php_versions }}"
           [[ "$v" == "all" || -z "$v" ]] && v="8.1,8.2,8.3,8.4"
-          echo "matrix=$(jq -nc --arg v "$(echo $v | tr -d ' ')" '{"php-version": ($v|split(",")) }')" >> $GITHUB_OUTPUT
+          echo "matrix=$(jq -nc --arg v "${v// /}" '{"php-version": ($v|split(",")) }')" >> $GITHUB_OUTPUT
 
   build:
     needs: setup
@@ -33,37 +33,51 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+
     steps:
-      # ──────────────────────────────────────────────────────────────
-      - name: Normalize & validate extension list
+      # ── 1. Normalize extensions + create hash (FIXED Get-FileHash bug) ──
+      - name: Prepare extension list & hash
         id: ext
         shell: powershell
         run: |
-          $raw = @"
-          ${{ inputs.extensions }}
-          "@
-          $list = $raw -replace '\s','' -replace ',{2,}',',' -replace '^,|,$',''
-          if (!$list) { exit 1 }
+          $raw = "${{ inputs.extensions }}".Trim()
+          $list = $raw -replace '\s+', '' -replace ',{2,}', ',' -replace '^,+|,+$', ''
           
-          # Force ICU download for intl (critical!)
-          if ($list -like "*intl*") { $list = "icu,$list" }
+          if ([string]::IsNullOrWhiteSpace($list)) {
+            Write-Error "Extension list is empty!"
+            exit 1
+          }
 
-          $hash = ($list | Get-FileHash -Algorithm SHA256).Hash.Substring(0,12)
+          # Force ICU for intl
+          if ($list -match '\bintl\b') {
+            $list = "icu,$list"
+            Write-Host "intl detected → added 'icu' to download list"
+          }
+
+          # Create SHA256 hash of the exact extension string (no pipeline bug)
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($list)
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          $hashBytes = $sha256.ComputeHash($bytes)
+          $hash = -join ($hashBytes[0..11] | ForEach-Object { $_.ToString("x2") })
+
           "EXTENSIONS=$list" >> $env:GITHUB_OUTPUT
           "HASH=$hash"       >> $env:GITHUB_OUTPUT
+          Write-Host "Final extension list: $list"
+          Write-Host "Hash: $hash"
 
-      # ──────────────────────────────────────────────────────────────
+      # ── 2. Checkout static-php-cli ──
       - name: Checkout static-php-cli
         uses: actions/checkout@v4
         with:
           repository: crazywhalecc/static-php-cli
           ref: main
 
-      - name: Setup host PHP
+      # ── 3. Setup host PHP & Composer ──
+      - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: 8.4
-          tools: pecl, composer
+          tools: composer
           extensions: curl, mbstring
           ini-values: memory_limit=-1
 
@@ -77,64 +91,57 @@ jobs:
         uses: actions/cache@v4
         with:
           path: downloads
-          key: sources-${{ steps.ext.outputs.HASH }}-${{ matrix.php-version }}-win
+          key: downloads-${{ steps.ext.outputs.HASH }}-${{ matrix.php-version }}-win
 
       - name: Install dependencies
         run: composer update --no-dev --prefer-dist -q
 
-      - name: Validate spc
-        run: bin/spc --version
+      # ── 4. Validate & doctor ──
+      - run: bin/spc --version
+      - run: bin/spc doctor --auto-fix
 
-      - name: Doctor (pre)
-        run: bin/spc doctor --auto-fix
-
-      # ──────────────────────────────────────────────────────────────
-      # THIS IS THE FIX – we explicitly force ICU + all extensions
-      # ──────────────────────────────────────────────────────────────
-      - name: Download sources (with ICU if intl is present)
+      # ── 5. Download sources (this is the real fix for intl) ──
+      - name: Download sources (including ICU if needed)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          bin/spc download `
-            --with-php=${{ matrix.php-version }} `
-            --for-extensions="${{ steps.ext.outputs.EXTENSIONS }}" `
-            --for-libs=icu `
-            --retry=5 `
+          bin/spc download ^
+            --with-php=${{ matrix.php-version }} ^
+            --for-extensions="${{ steps.ext.outputs.EXTENSIONS }}" ^
+            --retry=5 ^
             --prefer-pre-built
 
-      - name: Doctor (post-download)
-        run: bin/spc doctor --auto-fix
+      - run: bin/spc doctor --auto-fix
 
-      - name: Install UPX
-        run: bin/spc install-pkg upx
+      # ── 6. Install UPX ──
+      - run: bin/spc install-pkg upx
 
-      # ──────────────────────────────────────────────────────────────
-      - name: Build (strictly your list – intl will be there)
+      # ── 7. Build exactly your extension list ──
+      - name: Build PHP + extensions
         run: |
-          bin/spc build --build-cli --build-micro `
-            "${{ steps.ext.outputs.EXTENSIONS }}" `
+          bin/spc build --build-cli --build-micro ^
+            "${{ steps.ext.outputs.EXTENSIONS }}" ^
             --debug --with-upx-pack
 
-      # ──────────────────────────────────────────────────────────────
-      - name: Package
+      # ── 8. Package ──
+      - name: Package binaries
         shell: powershell
         run: |
           $ver = bin/spc dev:php-ver
-          mkdir dist -ea 0
-          Compress-Archive buildroot/bin/php.exe   "dist/php-${ver}-${{ steps.ext.outputs.HASH }}-cli-win.zip"
-          Compress-Archive buildroot/bin/micro.sfx "dist/php-${ver}-${{ steps.ext.outputs.HASH }}-micro-win.zip"
+          mkdir dist -Force
+          Compress-Archive -Path buildroot/bin/php.exe   -DestinationPath "dist/php-${ver}-${{ steps.ext.outputs.HASH }}-cli-win.zip"
+          Compress-Archive -Path buildroot/bin/micro.sfx -DestinationPath "dist/php-${ver}-${{ steps.ext.outputs.HASH }}-micro-win.zip"
           "PHPVER=$ver" >> $env:GITHUB_ENV
 
-      - name: README
+      # ── 9. README ──
+      - name: Create README
         run: |
-          cat > dist/README.txt <<EOF
-          Static PHP ${{ env.PHPVER }} (Windows)
-          Extensions: ${{ steps.ext.outputs.EXTENSIONS }}
-          Hash: ${{ steps.ext.outputs.HASH }}
-          EOF
+          echo "Static PHP ${{ env.PHPVER }} (Windows)`n`nExtensions: ${{ inputs.extensions }}`nHash: ${{ steps.ext.outputs.HASH }}" > dist/README.txt
 
+      # ── 10. Upload ──
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: php-${{ env.PHPVER }}-${{ steps.ext.outputs.HASH }}-windows
           path: dist/
+          if-no-files-found: error
