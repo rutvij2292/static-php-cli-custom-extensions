@@ -1,33 +1,173 @@
-name: Build icu-static for x64-windows
+name: Build Static PHP CLI Binaries for Windows (Customizable)
 
 on:
   workflow_dispatch:
+    inputs:
+      php_versions:
+        description: 'PHP versions to build (comma-separated, e.g. 8.2,8.3,8.4 or "all")'
+        required: true
+        type: string
+        default: all
+      presets:
+        description: 'Presets to build (comma-separated: spc-min, spc-max, spc-custom)'
+        required: true
+        type: string
+        default: spc-min,spc-max
+      custom_extensions:
+        description: 'Comma-separated extension list for spc-custom (no spaces, e.g. ctype,mbstring,opcache,redis,gd)'
+        type: string
+        default: ''
   schedule:
-    - cron: "0 0 * * 5"
-
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  build:
-    name: "Build icu-static with vcpkg"
-    runs-on: windows-latest
-    timeout-minutes: 240
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: "Vcpkg build"
-        run: vcpkg install icu:x64-windows-static --x-install-root=.
-
-      - name: "Pack"
+      - name: Generate build matrix
+        id: set-matrix
         run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Compress-Archive -Path "x64-windows-static" -DestinationPath "dist\icu-static-windows-x64.zip"
+          php_input="${{ inputs.php_versions }}"
+          preset_input="${{ inputs.presets }}"
 
-      - name: "Deploy to self-hosted OSS"
-        uses: static-php/upload-s3-action@v1.0.0
+          if [[ "$php_input" == "all" ]]; then
+            php_input="8.1,8.2,8.3,8.4"
+          fi
+
+          if [[ -z "$preset_input" ]]; then
+            preset_input="spc-min,spc-max"
+          fi
+
+          if echo "$preset_input" | grep -q "spc-custom" && [[ -z "${{ inputs.custom_extensions }}" ]]; then
+            echo "::error ::custom_extensions is required when spc-custom is selected in presets"
+            exit 1
+          fi
+
+          # Build JSON matrix
+          matrix_json=$(jq -n -c \
+            --arg php "$php_input" \
+            --arg pre "$preset_input" \
+            '$php | gsub(" "; "") | split(",") | map(select(. != "")) as $p |
+             $pre | gsub(" "; "") | split(",") | map(select(. != "")) as $r |
+             { "php-version": $p, "preset": $r }')
+
+          echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
+
+  build-release-artifacts:
+    needs: setup
+    name: Build ${{ matrix.php-version }} (${{ matrix.preset }}) on Windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - name: "Process env string"
+        id: process-env
+        shell: powershell
+        run: |
+          $preset = "${{ matrix.preset }}"
+
+          switch ($preset) {
+            "spc-min" {
+              $ext = "ctype,fileinfo,filter,iconv,mbstring,tokenizer,phar"
+            }
+            "spc-max" {
+              $ext = "amqp,apcu,bcmath,bz2,calendar,ctype, curl,dba,dom,ds,exif,ffi,fileinfo,filter,ftp,gd,iconv,igbinary,libxml,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pdo,pdo_mysql,pdo_sqlite,pdo_sqlsrv,phar,rar,redis,session,shmop,simdjson,simplexml,soap,sockets,sockets,sqlite3,sqlsrv,ssh2,sysvshm,tokenizer,xml,xmlreader,xmlwriter,yac,yaml,zip,zlib"
+            }
+            "spc-custom" {
+              $ext = "${{ inputs.custom_extensions }}".Trim()
+              if (!$ext) {
+                Write-Error "Extensions list cannot be empty for spc-custom"
+                exit 1
+              }
+            }
+            default {
+              Write-Error "Unknown preset: $preset"
+              exit 1
+            }
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "EXTENSIONS=$ext"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "OS=windows"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "ARCH=x86_64"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "CMD=bin/spc"
+
+      - name: "Checkout remote"
+        if: github.repository != 'crazywhalecc/static-php-cli'
+        uses: actions/checkout@v4
         with:
-          aws_key_id: ${{ secrets.AWS_KEY_ID }}
-          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws_bucket: ${{ secrets.AWS_BUCKET }}
-          source_dir: "dist/"
-          destination_dir: static-php-cli/deps/icu-static-windows-x64/
-          endpoint: ${{ secrets.AWS_ENDPOINT }}
+          repository: crazywhalecc/static-php-cli
+          ref: main
+
+      - name: "Setup PHP (host)"
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          tools: pecl, composer
+          extensions: curl, openssl, mbstring, filter
+          ini-values: memory_limit=-1
+
+      - name: "Cache composer packages"
+        id: composer-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php
+
+      - name: Cache downloaded sources
+        id: cache-download
+        uses: actions/cache@v4
+        with:
+          path: downloads
+          key: pack-lib-dependencies-${{ matrix.preset }}-${{ matrix.php-version }}-windows-latest
+
+      - name: "Install Dependencies"
+        run: composer update -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist --no-dev
+
+      - name: "Validate SPC powershell script"
+        run: ${{ steps.process-env.outputs.CMD }} --version
+
+      - name: "Run Build Tests (doctor)"
+        run: ${{ steps.process-env.outputs.CMD }} doctor --auto-fix
+
+      - name: "Download sources"
+        env:
+          GITHUB_TOKEN: ${{ secrets.S_GITHUB_TOKEN }}
+        run: ${{ steps.process-env.outputs.CMD }} download --with-php=${{ matrix.php-version }} --for-extensions="${{ steps.process-env.outputs.EXTENSIONS }}" --retry=5 --prefer-pre-built --ignore-cache-sources=php-src
+
+      - name: "Doctor (post-download)"
+        env:
+          GITHUB_TOKEN: ${{ secrets.S_GITHUB_TOKEN }}
+        run: ${{ steps.process-env.outputs.CMD }} doctor --auto-fix
+
+      - name: "Install UPX"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ${{ steps.process-env.outputs.CMD }} install-pkg upx
+
+      - name: "Build extensions: ${{ steps.process-env.outputs.EXTENSIONS }}"
+        run: ${{ steps.process-env.outputs.CMD }} build --build-cli --build-micro "${{ steps.process-env.outputs.EXTENSIONS }}" --debug --with-upx-pack
+
+      - name: "Pack PHP"
+        shell: powershell
+        run: |
+          $PHPVER = & ${{ steps.process-env.outputs.CMD }} dev:php-ver
+          New-Item -ItemType Directory -Force -Path dist
+          Compress-Archive -Path "buildroot\bin\php.exe" -DestinationPath "dist\php-${PHPVER}-cli-${{ matrix.preset }}-win.zip"
+          Compress-Archive -Path "buildroot\bin\micro.sfx" -DestinationPath "dist\php-${PHPVER}-micro-${{ matrix.preset }}-win.zip"
+          echo "PHPVER=$PHPVER" >> $env:GITHUB_ENV
+
+      - name: "Add README.txt"
+        shell: bash
+        run: |
+          echo -e "# Static PHP CLI - ${{ matrix.php-version }} (${{ env.PHPVER }}) - ${{ matrix.preset }}\n\nExtensions included:\n\n${{ steps.process-env.outputs.EXTENSIONS }}\n\nBuild command used:\n\n\`\`\`\n${{ steps.process-env.outputs.CMD }} build --build-cli --build-micro \"${{ steps.process-env.outputs.EXTENSIONS }}\" --debug --with-upx-pack\n\`\`\`\n" > dist/README.txt
+
+      - name: "Upload Artifacts (zips + README)"
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ env.PHPVER }}-${{ matrix.preset }}-windows
+          path: dist/
+          if-no-files-found: error
