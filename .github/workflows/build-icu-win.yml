@@ -17,7 +17,6 @@ on:
         description: 'Comma-separated extension list for spc-custom (no spaces, e.g. ctype,mbstring,opcache,redis,gd)'
         type: string
         default: ''
-  schedule:
 
 jobs:
   setup:
