@@ -72,11 +72,12 @@ jobs:
               $ext = "ctype,fileinfo,filter,iconv,mbstring,tokenizer,phar"
             }
             "spc-max" {
-              $ext = "amqp,apcu,bcmath,bz2,calendar,ctype, curl,dba,dom,ds,exif,ffi,fileinfo,filter,ftp,gd,iconv,igbinary,libxml,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pdo,pdo_mysql,pdo_sqlite,pdo_sqlsrv,phar,rar,redis,session,shmop,simdjson,simplexml,soap,sockets,sockets,sqlite3,sqlsrv,ssh2,sysvshm,tokenizer,xml,xmlreader,xmlwriter,yac,yaml,zip,zlib"
+              # FIXED: Added 'intl', removed space before 'curl', removed duplicate 'sockets'
+              $ext = "amqp,apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,ds,exif,ffi,fileinfo,filter,ftp,gd,intl,iconv,igbinary,libxml,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pdo,pdo_mysql,pdo_sqlite,pdo_sqlsrv,phar,rar,redis,session,shmop,simdjson,simplexml,soap,sockets,sqlite3,sqlsrv,ssh2,sysvshm,tokenizer,xml,xmlreader,xmlwriter,yac,yaml,zip,zlib"
             }
             "spc-custom" {
-              $ext = "${{ inputs.custom_extensions }}".Trim()
-              if (!$ext) {
+              $ext = "${{ inputs.custom_extensions }}"
+              if (-not $ext) {
                 Write-Error "Extensions list cannot be empty for spc-custom"
                 exit 1
               }
@@ -86,6 +87,9 @@ jobs:
               exit 1
             }
           }
+
+          # FIXED: Remove ALL whitespace (spaces/newlines) from the list to prevent errors like " intl"
+          $ext = $ext -replace '\s',''
 
           Add-Content -Path $env:GITHUB_OUTPUT -Value "EXTENSIONS=$ext"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "OS=windows"
@@ -158,6 +162,11 @@ jobs:
           Compress-Archive -Path "buildroot\bin\php.exe" -DestinationPath "dist\php-${PHPVER}-cli-${{ matrix.preset }}-win.zip"
           Compress-Archive -Path "buildroot\bin\micro.sfx" -DestinationPath "dist\php-${PHPVER}-micro-${{ matrix.preset }}-win.zip"
           echo "PHPVER=$PHPVER" >> $env:GITHUB_ENV
+          
+      - name: "Verify Loaded Extensions"
+        run: |
+           # Run the built php.exe and list modules
+           ./buildroot/bin/php.exe -m
 
       - name: "Add README.txt"
         shell: bash
