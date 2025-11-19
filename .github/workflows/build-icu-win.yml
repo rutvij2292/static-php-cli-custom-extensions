@@ -155,15 +155,36 @@ jobs:
         run: |
           $icuRoot = "source\icu-static-win"
           $expectedPath = "$icuRoot\x64-windows-static"
+
+          # 1. Check if ICU source exists at all (it might not be needed for this preset)
+          if (-not (Test-Path $icuRoot)) {
+            Write-Host "ICU source directory ($icuRoot) not found. Skipping fix (likely not required for this build)."
+            exit 0
+          }
+
+          # 2. Check if the structure is flattened (files in 'lib' root instead of subfolder)
           if ((Test-Path "$icuRoot\lib") -and -not (Test-Path "$expectedPath\lib")) {
-            Write-Host "Moving flattened ICU files to $expectedPath..."
+            Write-Host "Detected flattened ICU folder structure. Fixing..."
+            
+            # Create the expected directory structure
             New-Item -ItemType Directory -Force -Path $expectedPath | Out-Null
+
+            # Move the key folders into the expected path
             Move-Item -Path "$icuRoot\lib" -Destination "$expectedPath"
             Move-Item -Path "$icuRoot\include" -Destination "$expectedPath"
+            
+            # Move optional folders if they exist
             if (Test-Path "$icuRoot\bin") { Move-Item -Path "$icuRoot\bin" -Destination "$expectedPath" }
+            if (Test-Path "$icuRoot\share") { Move-Item -Path "$icuRoot\share" -Destination "$expectedPath" }
+            
+            Write-Host "Fixed ICU structure."
+          } elseif (-not (Test-Path "$expectedPath\lib")) {
+            # 3. If we are here, the folder exists but 'lib' is missing in both places. 
+            # This usually means the download failed or is corrupt, but we list contents to help debug.
+            Write-Host "Error: ICU lib directory not found in root or target."
+            Get-ChildItem -Recurse $icuRoot
           } else {
-            Write-Host "ICU structure check passed or files missing."
-            if (-not (Test-Path "$expectedPath\lib")) { Get-ChildItem -Recurse $icuRoot }
+             Write-Host "ICU structure appears correct."
           }
 
       - name: "Doctor (post-download)"
