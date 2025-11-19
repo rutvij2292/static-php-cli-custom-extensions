@@ -3,6 +3,11 @@ name: Build Static PHP CLI Binaries for Windows (Customizable)
 on:
   workflow_dispatch:
     inputs:
+      spc_version:
+        description: 'static-php-cli version (branch or tag, e.g. main, 2.3.0, v2.2.1)'
+        required: true
+        default: '2.7.7'
+        type: string
       php_versions:
         description: 'PHP versions to build (comma-separated, e.g. 8.2,8.3,8.4 or "all")'
         required: true
@@ -104,7 +109,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: crazywhalecc/static-php-cli
-          ref: main
+          # [NEW] Use the dynamic input here
+          ref: ${{ inputs.spc_version }}
 
       - name: "Setup PHP (host)"
         uses: shivammathur/setup-php@v2
@@ -143,6 +149,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.S_GITHUB_TOKEN }}
         run: ${{ steps.process-env.outputs.CMD }} download --with-php=${{ matrix.php-version }} --for-extensions="${{ steps.process-env.outputs.EXTENSIONS }}" --retry=5 --prefer-pre-built --ignore-cache-sources=php-src,icu-static-win
+
+      - name: "Fix ICU Directory Structure"
+        shell: powershell
+        run: |
+          $icuRoot = "source\icu-static-win"
+          $expectedPath = "$icuRoot\x64-windows-static"
+          if ((Test-Path "$icuRoot\lib") -and -not (Test-Path "$expectedPath\lib")) {
+            Write-Host "Moving flattened ICU files to $expectedPath..."
+            New-Item -ItemType Directory -Force -Path $expectedPath | Out-Null
+            Move-Item -Path "$icuRoot\lib" -Destination "$expectedPath"
+            Move-Item -Path "$icuRoot\include" -Destination "$expectedPath"
+            if (Test-Path "$icuRoot\bin") { Move-Item -Path "$icuRoot\bin" -Destination "$expectedPath" }
+          } else {
+            Write-Host "ICU structure check passed or files missing."
+            if (-not (Test-Path "$expectedPath\lib")) { Get-ChildItem -Recurse $icuRoot }
+          }
 
       - name: "Doctor (post-download)"
         env:
