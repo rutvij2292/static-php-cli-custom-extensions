@@ -61,6 +61,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
     steps:
+      - name: Enable Long Paths
+        run: git config --system core.longpaths true
+
       - name: "Process env string"
         id: process-env
         shell: powershell
@@ -125,7 +128,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: downloads
-          key: pack-lib-dependencies-${{ matrix.preset }}-${{ matrix.php-version }}-windows-latest
+          key: pack-lib-dependencies-${{ matrix.preset }}-${{ matrix.php-version }}-windows-latest-v2
 
       - name: "Install Dependencies"
         run: composer update -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist --no-dev
@@ -139,7 +142,7 @@ jobs:
       - name: "Download sources"
         env:
           GITHUB_TOKEN: ${{ secrets.S_GITHUB_TOKEN }}
-        run: ${{ steps.process-env.outputs.CMD }} download --with-php=${{ matrix.php-version }} --for-extensions="${{ steps.process-env.outputs.EXTENSIONS }}" --retry=5 --prefer-pre-built --ignore-cache-sources=php-src
+        run: ${{ steps.process-env.outputs.CMD }} download --with-php=${{ matrix.php-version }} --for-extensions="${{ steps.process-env.outputs.EXTENSIONS }}" --retry=5 --prefer-pre-built --ignore-cache-sources=php-src,icu-static-win
 
       - name: "Doctor (post-download)"
         env:
